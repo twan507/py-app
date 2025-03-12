@@ -1123,7 +1123,7 @@ class NotebookRunnerApp:
                     log_text.see(tk.END)
                 else:
                     status_label.config(text="Lỗi", foreground="red")
-                    log_text.insert(tk.END, f"Lỗi {exec_time}")
+                    log_text.insert(tk.END, f"{exec_time}")
                     log_text.see(tk.END)
                     # self.running_notebooks[notebook_path]['status'] = 'error'
                 
