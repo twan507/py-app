@@ -13,4 +13,4 @@ try:
 except subprocess.CalledProcessError as e:
     print(f"Error: {type(e).__name__}")
 
-# pyinstaller --onefile --icon=python.ico app.py
+# pyinstaller --noconsole --onefile --icon=python.ico app.py
