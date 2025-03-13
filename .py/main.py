@@ -1038,18 +1038,18 @@ class NotebookRunnerApp:
         loop_check.pack(side=tk.LEFT, padx=(0, 5))
 
         # Sleep time label and spinbox - in a separate frame for visibility control
-        ttk.Label(sleep_frame, text="Nghỉ:").pack(side=tk.LEFT, padx=(0, 0))
+        ttk.Label(sleep_frame, text="Nghỉ: ").pack(side=tk.LEFT, padx=(0, 0))
         sleep_var = tk.StringVar(value="1")
         sleep_spin = ttk.Spinbox(sleep_frame, from_=0, to=3600, width=4, textvariable=sleep_var)
         sleep_spin.pack(side=tk.LEFT, padx=(0, 0))
-        ttk.Label(sleep_frame, text="s").pack(side=tk.LEFT, padx=(0, 0))
+        ttk.Label(sleep_frame, text=" giây").pack(side=tk.LEFT, padx=(0, 0))
         
         # New: Run count controls for non-loop mode
-        ttk.Label(runs_frame, text="Số lần:").pack(side=tk.LEFT, padx=(0, 0))
+        ttk.Label(runs_frame, text="Số lần: ").pack(side=tk.LEFT, padx=(0, 0))
         runs_var = tk.StringVar(value="2")  # Default to 2 runs
         runs_spin = ttk.Spinbox(runs_frame, from_=1, to=100, width=4, textvariable=runs_var)
         runs_spin.pack(side=tk.LEFT, padx=(0, 0))
-        ttk.Label(runs_frame, text="lần").pack(side=tk.LEFT, padx=(0, 0))
+        ttk.Label(runs_frame, text=" lần").pack(side=tk.LEFT, padx=(0, 0))
 
         # Initialize visibility based on initial loop state
         if loop_var.get():
