@@ -136,6 +136,7 @@ class NotebookRunnerApp:
         
         # Variables
         self.notebooks = []
+        self.filtered_notebooks = []  # Add this line to initialize the list
         self.selected_notebooks = []
         self.running_notebooks = {}  # Store running notebook information {path: {'thread': thread, 'time': 0.0, 'status': 'running', 'controls': {...}}}
         self.timer_running = False  # Flag to control the timer thread
@@ -332,10 +333,21 @@ class NotebookRunnerApp:
                     
             info = self.running_notebooks[notebook_path]
             
-            # Skip if already running
+            # Skip ONLY if currently running, not if stopped/completed
             if info['status'] == 'running':
+                self.log(f"Bỏ qua {os.path.basename(notebook_path)} vì đang chạy")
                 continue
+                
+            # Ensure thread is properly cleaned up
+            if 'thread' in info and info['thread'] is not None and info['thread'].is_alive():
+                self.log(f"Đợi thread cũ kết thúc cho {os.path.basename(notebook_path)}")
+                info['stop_flag'] = True
+                time.sleep(0.5)  # Brief pause to let thread respond to stop flag
             
+            # Reset notebook state to prepare for new run
+            info['thread'] = None
+            info['stop_flag'] = False
+                
             # Update UI to show we're starting this notebook
             notebook_name = os.path.basename(notebook_path)
             
@@ -359,14 +371,13 @@ class NotebookRunnerApp:
                         self.root.update_idletasks()  # Keep UI responsive
                     except:
                         pass
-                
+                        
             else:
                 # For single-run notebooks, run them once and wait for completion
                 self.log(f"Chạy một lần: {notebook_name}")
                 
                 # Update status and UI
                 info['status'] = 'running'
-                info['stop_flag'] = False
                 info['time'] = 0.0
                 
                 try:
@@ -414,9 +425,15 @@ class NotebookRunnerApp:
 
     def clear_notebook_selection(self):
         """Clear the selection in the notebook listbox"""
+        # Reset display for all items (remove any selection numbers)
+        for i in range(self.notebook_listbox.size()):
+            notebook_name = os.path.basename(self.filtered_notebooks[i])
+            self.notebook_listbox.delete(i)
+            self.notebook_listbox.insert(i, f"    | {notebook_name}")
+        
         self.notebook_listbox.selection_clear(0, tk.END)  # Clear all selections
         self.selected_notebooks = []  # Clear the selected_notebooks list
-        self.log("Đã bỏ chọn tất cả notebooks")
+        self.selection_order = []     # Clear the selection order list
         
     def create_widgets(self):
         # Main frame
@@ -443,21 +460,35 @@ class NotebookRunnerApp:
         list_frame = ttk.Frame(notebook_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        self.notebook_listbox = tk.Listbox(list_frame, height=6, selectmode=tk.MULTIPLE)
+        # Change selection mode from MULTIPLE to EXTENDED
+        self.notebook_listbox = tk.Listbox(list_frame, height=6, selectmode=tk.EXTENDED)
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.notebook_listbox.yview)
         self.notebook_listbox.configure(yscrollcommand=scrollbar.set)
         
         self.notebook_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+        # Add instance variable to track selection order
+        self.selection_order = []
+        
+        # Modify the binding to use our custom selection handler
         self.notebook_listbox.bind('<<ListboxSelect>>', self.on_notebook_select)
         
-        # Button to add selected notebooks and clear selection
-        add_btn = ttk.Button(notebook_frame, text="Thêm Notebooks", command=self.add_selected_notebooks)
-        add_btn.pack(side=tk.RIGHT, padx=10, pady=5)
-        
-        clear_select_btn = ttk.Button(notebook_frame, text="Bỏ chọn", command=self.clear_notebook_selection)
-        clear_select_btn.pack(side=tk.RIGHT, padx=5, pady=5)
+        # Create a button frame to organize buttons better
+        button_frame = ttk.Frame(notebook_frame)
+        button_frame.pack(side=tk.RIGHT, padx=5, pady=5)
+
+        # Add "Thêm Notebooks" button with improved styling
+        add_btn = ttk.Button(button_frame, text="Thêm Notebooks", 
+                        command=self.add_selected_notebooks,
+                        width=20)
+        add_btn.pack(side=tk.RIGHT, padx=3)
+
+        # Add "Bỏ chọn" button with consistent styling
+        clear_select_btn = ttk.Button(button_frame, text="Bỏ chọn", 
+                                    command=self.clear_notebook_selection,
+                                    width=20)
+        clear_select_btn.pack(side=tk.RIGHT, padx=3)
         
         # --- Auto-action container with simplified design ---
         auto_container = ttk.Frame(main_frame)
@@ -526,13 +557,19 @@ class NotebookRunnerApp:
         # Add "Chạy lần lượt" button to new location
         run_sequential_btn = ttk.Button(notebooks_control_frame, text="Chạy lần lượt", 
                                     command=self.run_notebooks_sequentially, 
-                                    width=15)
+                                    width=20)
         run_sequential_btn.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # Add "Xóa tất cả" button between the other buttons
+        remove_all_btn = ttk.Button(notebooks_control_frame, text="Xóa tất cả", 
+                                command=self.remove_all_notebooks, 
+                                width=20)
+        remove_all_btn.pack(side=tk.RIGHT, padx=5, pady=5)
 
         # Add "Dừng tất cả" button next to it
         stop_all_btn = ttk.Button(notebooks_control_frame, text="Dừng tất cả", 
                                 command=self.stop_all_notebooks, 
-                                width=15)
+                                width=20)
         stop_all_btn.pack(side=tk.RIGHT, padx=5, pady=5)
 
         # Running notebooks frame
@@ -606,8 +643,8 @@ class NotebookRunnerApp:
         
         self.notebook_listbox.delete(0, tk.END)
         self.selected_notebooks = []
-        # Tạo danh sách filtered chứa các notebook chưa được thêm
-        self.filtered_notebooks = []
+        self.selection_order = []  # Reset selection order
+        self.filtered_notebooks = []  # Reset filtered notebooks list
         
         # So sánh danh sách bằng đường dẫn chuẩn (absolute path)
         running_paths = set(os.path.abspath(path) for path in self.running_notebooks.keys())
@@ -615,22 +652,85 @@ class NotebookRunnerApp:
         if self.notebooks:
             for nb in self.notebooks:
                 if nb not in running_paths:
-                    self.notebook_listbox.insert(tk.END, os.path.basename(nb))
+                    self.notebook_listbox.insert(tk.END, f"    | {os.path.basename(nb)}")
                     self.filtered_notebooks.append(nb)
         else:
             self.log("Không tìm thấy notebook nào.")
 
+    # First, add the new function to the NotebookRunnerApp class
+    def remove_all_notebooks(self):
+        """Remove all notebooks from the running list"""
+        # First stop all running notebooks
+        self.stop_all_notebooks()
+        
+        # Count how many notebooks were removed
+        notebook_count = len(self.running_notebooks)
+        
+        # Remove all notebook frames from UI
+        for notebook_path, info in list(self.running_notebooks.items()):
+            if 'frame' in info and info['frame'].winfo_exists():
+                info['frame'].destroy()
+        
+        # Clear the running notebooks dictionary
+        self.running_notebooks.clear()
+        
+        # Log the action
+        if notebook_count > 0:
+            self.log(f"Đã xóa tất cả {notebook_count} notebooks khỏi danh sách")
+        
+        # Refresh the notebook list to show all notebooks again
+        self.refresh_notebooks()
+
     def on_notebook_select(self, event):
-        self.selected_notebooks = []
+        """Handle notebook selection and show selection order based on click sequence"""
+        # Get current selection and previous selection
         selected_indices = self.notebook_listbox.curselection()
         
-        for index in selected_indices:
-            # Lấy notebook từ filtered_notebooks chứ không phải self.notebooks ban đầu
+        # Determine what changed since last selection event
+        if not hasattr(self, 'previous_selection'):
+            self.previous_selection = []
+        
+        newly_selected = [idx for idx in selected_indices if idx not in self.previous_selection]
+        newly_deselected = [idx for idx in self.previous_selection if idx not in selected_indices]
+        
+        # Update our selection order:
+        # 1. Add newly selected items to the end of our order
+        # 2. Remove items that were deselected
+        for idx in newly_selected:
+            if idx not in self.selection_order:
+                self.selection_order.append(idx)
+        
+        # Remove deselected items
+        self.selection_order = [idx for idx in self.selection_order if idx in selected_indices]
+        
+        # Reset display for all items first (remove any selection numbers)
+        for i in range(self.notebook_listbox.size()):
+            notebook_name = os.path.basename(self.filtered_notebooks[i])
+            self.notebook_listbox.delete(i)
+            self.notebook_listbox.insert(i, f"    | {notebook_name}")
+        
+        # Update selected_notebooks based on the current selection order
+        self.selected_notebooks = []
+        for index in self.selection_order:
             notebook = self.filtered_notebooks[index]
             self.selected_notebooks.append(notebook)
         
-        if self.selected_notebooks:
-            self.log(f"Đã chọn {len(self.selected_notebooks)} notebook(s)")
+        # Display selection order numbers
+        for i, index in enumerate(self.selection_order):
+            order_num = i + 1  # Selection order number (1-based)
+            notebook_name = os.path.basename(self.filtered_notebooks[index])
+            display_text = f"{order_num:2d} | {notebook_name}"
+            
+            # Update the listbox display
+            self.notebook_listbox.delete(index)
+            self.notebook_listbox.insert(index, display_text)
+        
+        # Restore selection highlighting
+        for idx in selected_indices:
+            self.notebook_listbox.selection_set(idx)
+        
+        # Save current selection for next comparison
+        self.previous_selection = list(selected_indices)
     
     def browse_output_dir(self):
         # This method is no longer needed but we'll keep it for compatibility
@@ -1134,7 +1234,7 @@ class NotebookRunnerApp:
             # Check if notebook has been flagged to stop
             if self.running_notebooks[notebook_path]['stop_flag']:
                 return False
-                
+                    
             # Create a custom output redirector for this notebook's log
             class NotebookLogRedirector:
                 def __init__(self, log_widget, main_log_func, notebook_path, app):
@@ -1147,14 +1247,19 @@ class NotebookRunnerApp:
                     msg = message.strip()
                     if msg:
                         try:
-                            self.log_widget.insert(tk.END, f"{msg}\n")
-                            self.log_widget.see(tk.END)
-                        except tk.TclError:
-                            # Nếu widget không còn tồn tại thì bỏ qua
+                            # Check if widget still exists before accessing it
+                            if hasattr(self.app, 'root') and self.app.root.winfo_exists():
+                                if self.log_widget.winfo_exists():
+                                    self.log_widget.insert(tk.END, f"{msg}\n")
+                                    self.log_widget.see(tk.END)
+                        except (tk.TclError, RuntimeError, AttributeError):
+                            # Safely handle any widget-related errors
                             pass
+                            
                         try:
+                            # Also safely log to the main log
                             self.main_log_func(f"[{os.path.basename(self.notebook_path)}] {msg}")
-                        except tk.TclError:
+                        except (tk.TclError, RuntimeError):
                             pass
                     
                 def flush(self):
@@ -1172,29 +1277,44 @@ class NotebookRunnerApp:
                 success, exec_time = execute_notebook(notebook_path, None)
                 
                 # Check if we've been stopped during execution
-                if self.running_notebooks[notebook_path]['stop_flag']:
+                if notebook_path not in self.running_notebooks or self.running_notebooks[notebook_path]['stop_flag']:
                     return False
                 
-                if success:
-                    status_label.config(text="Thành công", foreground="green")
-                    log_text.insert(tk.END, f"Thành công {exec_time}")
-                    log_text.see(tk.END)
-                else:
-                    status_label.config(text="Lỗi", foreground="red")
-                    log_text.insert(tk.END, f"{exec_time}")
-                    log_text.see(tk.END)
-                    # self.running_notebooks[notebook_path]['status'] = 'error'
+                # Safely update UI
+                try:
+                    if status_label.winfo_exists() and log_text.winfo_exists():
+                        if success:
+                            status_label.config(text="Thành công", foreground="green")
+                            log_text.insert(tk.END, f"Thành công {exec_time}")
+                            log_text.see(tk.END)
+                        else:
+                            status_label.config(text="Lỗi", foreground="red")
+                            log_text.insert(tk.END, f"{exec_time}")
+                            log_text.see(tk.END)
+                except (tk.TclError, RuntimeError):
+                    pass
                 
                 return success
             finally:
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
-                
+                    
         except Exception as e:
-            self.log(f"Lỗi khi thực thi {os.path.basename(notebook_path)}: {str(e)}")
-            log_text.insert(tk.END, f"Lỗi: {str(e)}\n")
-            status_label.config(text="Lỗi", foreground="red")
-            self.running_notebooks[notebook_path]['status'] = 'error'
+            # Safely handle errors and update UI
+            try:
+                if notebook_path in self.running_notebooks:
+                    self.log(f"Lỗi khi thực thi {os.path.basename(notebook_path)}: {str(e)}")
+                    
+                    if log_text.winfo_exists():
+                        log_text.insert(tk.END, f"Lỗi: {str(e)}\n")
+                        
+                    if status_label.winfo_exists():
+                        status_label.config(text="Lỗi", foreground="red")
+                        
+                    self.running_notebooks[notebook_path]['status'] = 'error'
+            except (tk.TclError, RuntimeError, AttributeError):
+                pass
+                
             return False
 
 def main():
