@@ -401,6 +401,105 @@ class NotebookRunnerApp:
             # Check again after 1 second
             self.root.after(1000, self.check_stop_time)
 
+    def run_notebooks_sequentially(self):
+        """Run all notebooks in the running list sequentially from top to bottom"""
+        if not self.running_notebooks:
+            messagebox.showwarning("Chú ý", "Không có notebook nào trong danh sách chạy.")
+            return
+        
+        # Get notebooks sorted by their position in the UI
+        sorted_notebooks = self.get_notebooks_by_ui_order()
+        if not sorted_notebooks:
+            return
+        
+        # Start the sequential run in a separate thread
+        sequence_thread = Thread(target=self.execute_notebooks_sequence, args=(sorted_notebooks,))
+        sequence_thread.daemon = True
+        sequence_thread.start()
+        
+        self.log(f"Bắt đầu chạy lần lượt {len(sorted_notebooks)} notebooks")
+
+    def get_notebooks_by_ui_order(self):
+        """Get notebooks sorted by their vertical position in the UI"""
+        notebook_positions = []
+        
+        # Get each notebook's frame position
+        for notebook_path, info in self.running_notebooks.items():
+            if 'frame' in info and info['frame'].winfo_exists():
+                y_position = info['frame'].winfo_y()
+                notebook_positions.append((y_position, notebook_path))
+        
+        # Sort by Y position (top to bottom)
+        notebook_positions.sort()
+        
+        # Return just the sorted notebook paths
+        return [path for _, path in notebook_positions]
+
+    def execute_notebooks_sequence(self, notebook_paths):
+        """Execute a sequence of notebooks one after another, respecting loop settings"""
+        for notebook_path in notebook_paths:
+            # Skip if notebook was removed from the running list
+            if notebook_path not in self.running_notebooks:
+                continue
+                    
+            info = self.running_notebooks[notebook_path]
+            
+            # Skip if already running
+            if info['status'] == 'running':
+                continue
+            
+            # Update UI to show we're starting this notebook
+            notebook_name = os.path.basename(notebook_path)
+            self.log(f"Chạy lần lượt: {notebook_name}")
+            
+            # Determine if this notebook should run in loop mode
+            is_loop_mode = info['loop_var'].get()
+            
+            if is_loop_mode:
+                # For loop mode notebooks, start them in their own thread and continue immediately
+                self.log(f"Bắt đầu chạy lặp lại: {notebook_name}")
+                # Use the existing start_notebook method which creates a background thread
+                self._start_notebook_immediately(notebook_path)
+                # Continue to next notebook without waiting
+            else:
+                # For single-run notebooks, run them once and wait for completion
+                self.log(f"Chạy một lần: {notebook_name}")
+                
+                # Update status and UI
+                info['status'] = 'running'
+                info['stop_flag'] = False
+                info['time'] = 0.0
+                
+                try:
+                    # Update UI elements
+                    info['time_label'].config(text="00:00.0")
+                    info['status_label'].config(text="Đang chạy", foreground="blue")
+                    info['controls']['start_btn'].config(state=tk.DISABLED)
+                    info['controls']['stop_btn'].config(state=tk.NORMAL)
+                    
+                    # Log the execution
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    info['log_text'].insert(tk.END, f"\n--- Chạy lần lượt (chế độ một lần) ({current_time}): ")
+                    info['log_text'].see(tk.END)
+                    
+                    # Execute notebook once and wait for completion
+                    self.execute_notebook_with_log(notebook_path, info['log_text'], info['status_label'])
+                    
+                    # Update status after completion
+                    info['status'] = 'completed'
+                    info['status_label'].config(text="Hoàn thành", foreground="green")
+                    info['controls']['start_btn'].config(state=tk.NORMAL)
+                    info['controls']['stop_btn'].config(state=tk.DISABLED)
+                    
+                except Exception as e:
+                    self.log(f"Lỗi khi chạy lần lượt {notebook_name}: {str(e)}")
+                    info['status'] = 'error'
+                    info['status_label'].config(text="Lỗi", foreground="red")
+                    info['controls']['start_btn'].config(state=tk.NORMAL)
+                    info['controls']['stop_btn'].config(state=tk.DISABLED)
+        
+        self.log("Đã hoàn thành chạy lần lượt tất cả notebooks")
+
     def stop_all_notebooks(self):
         """Stop all running notebooks"""
         stopped_count = 0
@@ -457,6 +556,10 @@ class NotebookRunnerApp:
         # Button to add selected notebooks and clear selection
         add_btn = ttk.Button(notebook_frame, text="Thêm Notebooks", command=self.add_selected_notebooks)
         add_btn.pack(side=tk.RIGHT, padx=10, pady=5)
+
+        # Add new "Chạy lần lượt" button
+        run_sequential_btn = ttk.Button(notebook_frame, text="Chạy lần lượt", command=self.run_notebooks_sequentially)
+        run_sequential_btn.pack(side=tk.RIGHT, padx=5, pady=5)
         
         clear_select_btn = ttk.Button(notebook_frame, text="Bỏ chọn", command=self.clear_notebook_selection)
         clear_select_btn.pack(side=tk.RIGHT, padx=5, pady=5)
@@ -537,9 +640,9 @@ class NotebookRunnerApp:
         
         # Đặt giá trị mặc định cho auto-start và auto-stop nếu cần
         self.single_start_hour.set("08")
-        self.single_start_minute.set("30")
+        self.single_start_minute.set("45")
         self.loop_start_hour.set("08")
-        self.loop_start_minute.set("45")
+        self.loop_start_minute.set("55")
         self.hour_var.set("15")
         self.minute_var.set("10")
         
@@ -765,6 +868,57 @@ class NotebookRunnerApp:
         # Clear the selection after adding notebooks
         self.clear_notebook_selection()
         self.refresh_notebooks()
+
+    def move_notebook_up(self, notebook_path, frame):
+        """Move a notebook up in the UI order"""
+        # Get all frames in order
+        ordered_frames = self.get_notebook_frames_ordered()
+        
+        # Find current frame position
+        current_index = ordered_frames.index(frame)
+        
+        # Can't move up if already at the top
+        if current_index == 0:
+            return
+        
+        # Swap with the frame above
+        frame.pack_forget()
+        frame.pack(before=ordered_frames[current_index-1], fill=tk.X, expand=True, pady=5, padx=5)
+        
+        self.log(f"Đã di chuyển notebook {os.path.basename(notebook_path)} lên trên")
+    
+    def move_notebook_down(self, notebook_path, frame):
+        """Move a notebook down in the UI order"""
+        # Get all frames in order
+        ordered_frames = self.get_notebook_frames_ordered()
+        
+        # Find current frame position
+        current_index = ordered_frames.index(frame)
+        
+        # Can't move down if already at the bottom
+        if current_index >= len(ordered_frames)-1:
+            return
+        
+        # Get the frame below
+        below_frame = ordered_frames[current_index+1]
+        
+        # Swap positions
+        frame.pack_forget()
+        frame.pack(after=below_frame, fill=tk.X, expand=True, pady=5, padx=5)
+        
+        self.log(f"Đã di chuyển notebook {os.path.basename(notebook_path)} xuống dưới")
+        
+    def get_notebook_frames_ordered(self):
+        """Get all notebook frames in their current UI order"""
+        frames = []
+        
+        for widget in self.running_container.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                frames.append(widget)
+        
+        # Sort frames by their Y position
+        frames.sort(key=lambda f: f.winfo_y())
+        return frames
     
     def add_notebook_to_running(self, notebook_path):
         """Add a single notebook to the running list and create UI elements for it"""
@@ -775,9 +929,23 @@ class NotebookRunnerApp:
         # Upper part: name and controls
         upper_frame = ttk.Frame(frame)
         upper_frame.pack(fill=tk.X, expand=True, pady=2)
+
+        # Order control buttons (Up/Down)
+        order_frame = ttk.Frame(upper_frame)
+        order_frame.pack(side=tk.LEFT, padx=2)
+        
+        # Up button
+        up_btn = ttk.Button(order_frame, text="↑", width=2, 
+                        command=lambda p=notebook_path, f=frame: self.move_notebook_up(p, f))
+        up_btn.pack(side=tk.LEFT, pady=1)
+        
+        # Down button
+        down_btn = ttk.Button(order_frame, text="↓", width=2,
+                            command=lambda p=notebook_path, f=frame: self.move_notebook_down(p, f))
+        down_btn.pack(side=tk.LEFT, pady=1)
         
         # Name label with reduced width to move everything left
-        name_label = ttk.Label(upper_frame, text=os.path.basename(notebook_path), width=35)
+        name_label = ttk.Label(upper_frame, text=os.path.basename(notebook_path), width=30)
         name_label.pack(side=tk.LEFT, padx=(0, 8))
         
         # Timer label with smaller padding
@@ -864,14 +1032,16 @@ class NotebookRunnerApp:
             'stop_flag': False,
             'log_text': log_text,
             'loop_var': loop_var,
-            'sleep_var': sleep_var,  # Add the sleep variable
+            'sleep_var': sleep_var,
             'controls': {
                 'start_btn': start_btn,
                 'stop_btn': stop_btn,
                 'clear_btn': clear_btn,
                 'remove_btn': remove_btn,
                 'loop_check': loop_check,
-                'sleep_spin': sleep_spin  # Add the sleep spinbox
+                'sleep_spin': sleep_spin,
+                'up_btn': up_btn,
+                'down_btn': down_btn
             }
         }
         
