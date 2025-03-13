@@ -143,63 +143,25 @@ class NotebookRunnerApp:
         self.create_widgets()
         self.refresh_notebooks()
 
-    def check_auto_start(self):
-        """Check if any notebooks should be started based on time"""
+    def check_auto_run_time(self):
+        """Check if it's time to auto-run notebooks sequentially"""
         if hasattr(self, 'root') and self.root.winfo_exists():
+            # Get current time
             now = datetime.now()
             current_hour = now.hour
             current_minute = now.minute
             
             try:
-                # Get time settings
-                loop_hour = int(self.loop_start_hour.get())
-                loop_minute = int(self.loop_start_minute.get())
-                single_hour = int(self.single_start_hour.get())
-                single_minute = int(self.single_start_minute.get())
+                # Get selected time
+                selected_hour = int(self.auto_run_hour.get())
+                selected_minute = int(self.auto_run_minute.get())
                 
-                # Check for waiting notebooks that should start
-                for notebook_path, info in list(self.running_notebooks.items()):
-                    if info['status'] == 'waiting':
-                        is_loop_mode = info['loop_var'].get()
-                        
-                        # Use appropriate time based on mode
-                        if is_loop_mode and self.loop_start_enabled.get():
-                            check_hour, check_minute = loop_hour, loop_minute
-                        elif not is_loop_mode and self.single_start_enabled.get():
-                            check_hour, check_minute = single_hour, single_minute
-                        else:
-                            continue  # Skip if the corresponding mode is not enabled
-                        
-                        # Check if it's time to start
-                        if (current_hour > check_hour or 
-                            (current_hour == check_hour and current_minute >= check_minute)):
-                            # Start this notebook
-                            self.log(f"Tự động bắt đầu {os.path.basename(notebook_path)}")
-                            self._start_notebook_immediately(notebook_path)
-                
-                # Check if we need to auto-start notebooks at the specified times
-                # For single run auto-start
-                if self.single_start_enabled.get():
-                    single_exact_match = (current_hour == single_hour and current_minute == single_minute)
-                    
-                    if single_exact_match:
-                        # Auto-start all ready notebooks set for single run
-                        started_count = 0
-                        for notebook_path, info in list(self.running_notebooks.items()):
-                            if info['status'] == 'ready' and not info['loop_var'].get():
-                                self._start_notebook_immediately(notebook_path)
-                                started_count += 1
-                        
-                        if started_count > 0:
-                            self.log(f"Đã tự động chạy {started_count} notebooks chế độ một lần lúc {single_hour:02d}:{single_minute:02d}")
-                            self.single_timer_label.config(text=f"Đã chạy {started_count} notebooks", foreground="green")
-                            # Disable auto-start after triggering
-                            self.single_start_enabled.set(False)
-                        
-                    # Update countdown display
-                    elif not self._is_time_passed(single_hour, single_minute):
+                # Update countdown display
+                if self.auto_run_enabled.get():
+                    if (current_hour < selected_hour or 
+                        (current_hour == selected_hour and current_minute < selected_minute)):
                         # Calculate time remaining
-                        target_time = now.replace(hour=single_hour, minute=single_minute, second=0)
+                        target_time = now.replace(hour=selected_hour, minute=selected_minute, second=0)
                         time_diff = target_time - now
                         hours, remainder = divmod(time_diff.seconds, 3600)
                         minutes, seconds = divmod(remainder, 60)
@@ -209,57 +171,36 @@ class NotebookRunnerApp:
                         else:
                             countdown = f"Còn {minutes} phút {seconds} giây"
                         
-                        self.single_timer_label.config(text=countdown, foreground="blue")
-                    else:
-                        self.single_timer_label.config(text="Sẵn sàng chạy ngay", foreground="green")
-                else:
-                    self.single_timer_label.config(text="")
-                
-                # For loop run auto-start
-                if self.loop_start_enabled.get():
-                    loop_exact_match = (current_hour == loop_hour and current_minute == loop_minute)
-                    
-                    if loop_exact_match:
-                        # Auto-start all ready notebooks set for loop run
-                        started_count = 0
-                        for notebook_path, info in list(self.running_notebooks.items()):
-                            if info['status'] == 'ready' and info['loop_var'].get():
-                                self._start_notebook_immediately(notebook_path)
-                                started_count += 1
+                        self.auto_run_timer_label.config(text=countdown, foreground="blue")
+                    elif (current_hour == selected_hour and current_minute == selected_minute):
+                        # Time matched - run notebooks sequentially!
+                        self.auto_run_timer_label.config(text="Đang chạy...", foreground="green")
                         
-                        if started_count > 0:
-                            self.log(f"Đã tự động chạy {started_count} notebooks chế độ lặp lại lúc {loop_hour:02d}:{loop_minute:02d}")
-                            self.loop_timer_label.config(text=f"Đã chạy {started_count} notebooks", foreground="green")
-                            # Disable auto-start after triggering
-                            self.loop_start_enabled.set(False)
-                        
-                    # Update countdown display
-                    elif not self._is_time_passed(loop_hour, loop_minute):
-                        # Calculate time remaining
-                        target_time = now.replace(hour=loop_hour, minute=loop_minute, second=0)
-                        time_diff = target_time - now
-                        hours, remainder = divmod(time_diff.seconds, 3600)
-                        minutes, seconds = divmod(remainder, 60)
-                        
-                        if hours > 0:
-                            countdown = f"Còn {hours} giờ {minutes} phút"
+                        # Run notebooks sequentially
+                        sorted_notebooks = self.get_notebooks_by_ui_order()
+                        if sorted_notebooks:
+                            self.log(f"Tự động chạy lần lượt {len(sorted_notebooks)} notebooks vào lúc {selected_hour:02d}:{selected_minute:02d}")
+                            sequence_thread = Thread(target=self.execute_notebooks_sequence, args=(sorted_notebooks,))
+                            sequence_thread.daemon = True
+                            sequence_thread.start()
+                            
+                            # Disable auto-run after triggering
+                            self.auto_run_enabled.set(False)
                         else:
-                            countdown = f"Còn {minutes} phút {seconds} giây"
-                        
-                        self.loop_timer_label.config(text=countdown, foreground="blue")
+                            self.auto_run_timer_label.config(text="Không có notebooks", foreground="red")
+                            self.auto_run_enabled.set(False)
+
                     else:
-                        self.loop_timer_label.config(text="Sẵn sàng chạy ngay", foreground="green")
+                        # Time already passed
+                        self.auto_run_timer_label.config(text="Thời gian đã qua", foreground="orange")
                 else:
-                    self.loop_timer_label.config(text="")
+                    self.auto_run_timer_label.config(text="")
                     
             except (ValueError, TypeError) as e:
-                if self.single_start_enabled.get():
-                    self.single_timer_label.config(text="Lỗi định dạng thời gian", foreground="red")
-                if self.loop_start_enabled.get():
-                    self.loop_timer_label.config(text="Lỗi định dạng thời gian", foreground="red")
+                self.auto_run_timer_label.config(text="Lỗi định dạng thời gian", foreground="red")
             
             # Check again after 1 second
-            self.root.after(1000, self.check_auto_start)
+            self.root.after(1000, self.check_auto_run_time)
 
     def _is_time_passed(self, hour, minute):
         """Check if the current time has passed the given hour:minute"""
@@ -267,67 +208,14 @@ class NotebookRunnerApp:
         return now.hour > hour or (now.hour == hour and now.minute >= minute)
 
     def start_notebook(self, notebook_path):
-        """Start running a notebook, possibly with delay"""
+        """Start running a notebook, no waiting for auto-start time"""
         info = self.running_notebooks[notebook_path]
         
         # Already running or waiting, don't do anything
         if info['status'] == 'running' or info['status'] == 'waiting':
             return
         
-        # Check if we should wait based on mode
-        is_loop_mode = info['loop_var'].get()
-        
-        # Loop mode - check if loop auto-start is enabled
-        if is_loop_mode and self.loop_start_enabled.get():
-            check_hour = int(self.loop_start_hour.get())
-            check_minute = int(self.loop_start_minute.get())
-            
-            # Check if current time is before the specified start time
-            now = datetime.now()
-            if now.hour < check_hour or (now.hour == check_hour and now.minute < check_minute):
-                # Set notebook to waiting state
-                info['status'] = 'waiting'
-                info['stop_flag'] = False
-                info['time'] = 0.0
-                info['time_label'].config(text="00:00.0")
-                
-                # Format the wait time
-                wait_time = f"{check_hour:02d}:{check_minute:02d}"
-                info['status_label'].config(text=f"Chờ đến {wait_time}", foreground="orange")
-                
-                # Update controls
-                info['controls']['start_btn'].config(state=tk.DISABLED)
-                info['controls']['stop_btn'].config(state=tk.NORMAL)
-                
-                self.log(f"Đang chờ đến {wait_time} để chạy lặp lại: {os.path.basename(notebook_path)}")
-                return
-        
-        # Single run mode - check if single auto-start is enabled
-        elif not is_loop_mode and self.single_start_enabled.get():
-            check_hour = int(self.single_start_hour.get())
-            check_minute = int(self.single_start_minute.get())
-            
-            # Check if current time is before the specified start time
-            now = datetime.now()
-            if now.hour < check_hour or (now.hour == check_hour and now.minute < check_minute):
-                # Set notebook to waiting state
-                info['status'] = 'waiting'
-                info['stop_flag'] = False
-                info['time'] = 0.0
-                info['time_label'].config(text="00:00.0")
-                
-                # Format the wait time
-                wait_time = f"{check_hour:02d}:{check_minute:02d}"
-                info['status_label'].config(text=f"Chờ đến {wait_time}", foreground="orange")
-                
-                # Update controls
-                info['controls']['start_btn'].config(state=tk.DISABLED)
-                info['controls']['stop_btn'].config(state=tk.NORMAL)
-                
-                self.log(f"Đang chờ đến {wait_time} để chạy một lần: {os.path.basename(notebook_path)}")
-                return
-        
-        # If we get here, start immediately
+        # Start immediately - no more waiting for auto-start time
         self._start_notebook_immediately(notebook_path)
 
     def _start_notebook_immediately(self, notebook_path):
@@ -351,7 +239,7 @@ class NotebookRunnerApp:
         thread.start()
         
         info['thread'] = thread
-        self.log(f"Bắt đầu chạy: {os.path.basename(notebook_path)}")
+        # self.log(f"Bắt đầu chạy: {os.path.basename(notebook_path)}")
 
     def check_stop_time(self):
         """Start a periodic check for the auto-stop time"""
@@ -450,17 +338,28 @@ class NotebookRunnerApp:
             
             # Update UI to show we're starting this notebook
             notebook_name = os.path.basename(notebook_path)
-            self.log(f"Chạy lần lượt: {notebook_name}")
             
             # Determine if this notebook should run in loop mode
             is_loop_mode = info['loop_var'].get()
             
             if is_loop_mode:
-                # For loop mode notebooks, start them in their own thread and continue immediately
-                self.log(f"Bắt đầu chạy lặp lại: {notebook_name}")
+                # For loop mode notebooks, start them in their own thread
+                self.log(f"Chạy lặp lại: {notebook_name}")
                 # Use the existing start_notebook method which creates a background thread
                 self._start_notebook_immediately(notebook_path)
-                # Continue to next notebook without waiting
+                
+                # Wait for 60 seconds before proceeding to the next notebook
+                self.log(f"Đợi 60 giây trước khi chạy notebook tiếp theo...")
+                
+                # Wait in small increments to keep UI responsive
+                wait_start = time.time()
+                while time.time() - wait_start < 60:
+                    time.sleep(0.1)
+                    try:
+                        self.root.update_idletasks()  # Keep UI responsive
+                    except:
+                        pass
+                
             else:
                 # For single-run notebooks, run them once and wait for completion
                 self.log(f"Chạy một lần: {notebook_name}")
@@ -524,7 +423,7 @@ class NotebookRunnerApp:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Top actions (vẫn giữ nguyên)
+        # Top actions
         actions_frame = ttk.Frame(main_frame)
         actions_frame.pack(fill=tk.X, pady=5)
         
@@ -537,7 +436,7 @@ class NotebookRunnerApp:
         self.status_label = ttk.Label(actions_frame, text="Sẵn sàng")
         self.status_label.pack(side=tk.RIGHT, padx=5)
         
-        # Notebooks list section (không thay đổi)
+        # Notebooks list section
         notebook_frame = ttk.LabelFrame(main_frame, text="Notebooks có sẵn")
         notebook_frame.pack(fill=tk.X, pady=10)
         
@@ -556,63 +455,41 @@ class NotebookRunnerApp:
         # Button to add selected notebooks and clear selection
         add_btn = ttk.Button(notebook_frame, text="Thêm Notebooks", command=self.add_selected_notebooks)
         add_btn.pack(side=tk.RIGHT, padx=10, pady=5)
-
-        # Add new "Chạy lần lượt" button
-        run_sequential_btn = ttk.Button(notebook_frame, text="Chạy lần lượt", command=self.run_notebooks_sequentially)
-        run_sequential_btn.pack(side=tk.RIGHT, padx=5, pady=5)
         
         clear_select_btn = ttk.Button(notebook_frame, text="Bỏ chọn", command=self.clear_notebook_selection)
         clear_select_btn.pack(side=tk.RIGHT, padx=5, pady=5)
         
-        # --- Auto-action container: Auto-start và Auto-stop nằm trên cùng 1 hàng ---
+        # --- Auto-action container with simplified design ---
         auto_container = ttk.Frame(main_frame)
         auto_container.pack(fill=tk.X, pady=5)
         
-        # Auto-start frame (chiếm nửa bên trái)
-        auto_start_frame = ttk.LabelFrame(auto_container, text="Tự động chạy")
-        auto_start_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        # Simplified auto-run frame
+        auto_run_frame = ttk.LabelFrame(auto_container, text="Tự động chạy lần lượt")
+        auto_run_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
-        # Single run row (nằm trong Auto-start)
-        single_start_content = ttk.Frame(auto_start_frame)
-        single_start_content.pack(fill=tk.X, padx=5, pady=(10,5))
+        auto_run_content = ttk.Frame(auto_run_frame)
+        auto_run_content.pack(fill=tk.X, padx=5, pady=10)
         
-        self.single_start_enabled = tk.BooleanVar(value=False)
-        single_start_check = ttk.Checkbutton(single_start_content, text="Chạy một lần lúc:", variable=self.single_start_enabled)
-        single_start_check.pack(side=tk.LEFT, padx=5)
+        self.auto_run_enabled = tk.BooleanVar(value=False)
+        auto_run_check = ttk.Checkbutton(auto_run_content, text="Chạy lần lượt lúc:", variable=self.auto_run_enabled)
+        auto_run_check.pack(side=tk.LEFT, padx=5)
         
-        self.single_start_hour = tk.StringVar()
-        single_hour_spin = ttk.Spinbox(single_start_content, from_=0, to=23, width=4, format="%02.0f", textvariable=self.single_start_hour)
-        single_hour_spin.pack(side=tk.LEFT, padx=2)
-        ttk.Label(single_start_content, text=":").pack(side=tk.LEFT)
+        time_frame = ttk.Frame(auto_run_content)
+        time_frame.pack(side=tk.LEFT, padx=5)
         
-        self.single_start_minute = tk.StringVar()
-        single_minute_spin = ttk.Spinbox(single_start_content, from_=0, to=59, width=4, format="%02.0f", textvariable=self.single_start_minute)
-        single_minute_spin.pack(side=tk.LEFT, padx=2)
+        self.auto_run_hour = tk.StringVar(value="08")
+        hour_spin = ttk.Spinbox(time_frame, from_=0, to=23, width=4, format="%02.0f", textvariable=self.auto_run_hour)
+        hour_spin.pack(side=tk.LEFT, padx=2)
+        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
         
-        self.single_timer_label = ttk.Label(single_start_content, text="")
-        self.single_timer_label.pack(side=tk.LEFT, padx=10)
+        self.auto_run_minute = tk.StringVar(value="00")
+        minute_spin = ttk.Spinbox(time_frame, from_=0, to=59, width=4, format="%02.0f", textvariable=self.auto_run_minute)
+        minute_spin.pack(side=tk.LEFT, padx=2)
         
-        # Loop run row (nằm trong Auto-start)
-        loop_start_content = ttk.Frame(auto_start_frame)
-        loop_start_content.pack(fill=tk.X, padx=5, pady=(5,10))
+        self.auto_run_timer_label = ttk.Label(auto_run_content, text="")
+        self.auto_run_timer_label.pack(side=tk.LEFT, padx=10)
         
-        self.loop_start_enabled = tk.BooleanVar(value=False)
-        loop_start_check = ttk.Checkbutton(loop_start_content, text="Chạy lặp lại lúc:", variable=self.loop_start_enabled)
-        loop_start_check.pack(side=tk.LEFT, padx=5)
-        
-        self.loop_start_hour = tk.StringVar()
-        loop_hour_spin = ttk.Spinbox(loop_start_content, from_=0, to=23, width=4, format="%02.0f", textvariable=self.loop_start_hour)
-        loop_hour_spin.pack(side=tk.LEFT, padx=2)
-        ttk.Label(loop_start_content, text=":").pack(side=tk.LEFT)
-        
-        self.loop_start_minute = tk.StringVar()
-        loop_minute_spin = ttk.Spinbox(loop_start_content, from_=0, to=59, width=4, format="%02.0f", textvariable=self.loop_start_minute)
-        loop_minute_spin.pack(side=tk.LEFT, padx=2)
-        
-        self.loop_timer_label = ttk.Label(loop_start_content, text="")
-        self.loop_timer_label.pack(side=tk.LEFT, padx=10)
-        
-        # Auto-stop frame (chiếm nửa bên phải)
+        # Auto-stop frame (unchanged)
         auto_stop_frame = ttk.LabelFrame(auto_container, text="Ngừng tự động")
         auto_stop_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
@@ -626,29 +503,37 @@ class NotebookRunnerApp:
         time_frame = ttk.Frame(auto_stop_content)
         time_frame.pack(side=tk.LEFT, padx=5)
         
-        self.hour_var = tk.StringVar()
+        self.hour_var = tk.StringVar(value="15")
         hour_spin = ttk.Spinbox(time_frame, from_=0, to=23, width=4, format="%02.0f", textvariable=self.hour_var)
         hour_spin.pack(side=tk.LEFT, padx=2)
         ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
         
-        self.minute_var = tk.StringVar()
+        self.minute_var = tk.StringVar(value="10")
         minute_spin = ttk.Spinbox(time_frame, from_=0, to=59, width=4, format="%02.0f", textvariable=self.minute_var)
         minute_spin.pack(side=tk.LEFT, padx=2)
         
         self.stop_timer_label = ttk.Label(auto_stop_content, text="")
         self.stop_timer_label.pack(side=tk.LEFT, padx=10)
         
-        # Đặt giá trị mặc định cho auto-start và auto-stop nếu cần
-        self.single_start_hour.set("08")
-        self.single_start_minute.set("45")
-        self.loop_start_hour.set("08")
-        self.loop_start_minute.set("55")
-        self.hour_var.set("15")
-        self.minute_var.set("10")
-        
-        # Bắt đầu các tiến trình tự động (auto-start và auto-stop)
-        self.check_auto_start()
+        # Start timer checks
+        self.check_auto_run_time()
         self.check_stop_time()
+
+        # ADD NEW CONTROL BUTTONS FRAME HERE
+        notebooks_control_frame = ttk.Frame(main_frame)
+        notebooks_control_frame.pack(fill=tk.X, pady=5)
+
+        # Add "Chạy lần lượt" button to new location
+        run_sequential_btn = ttk.Button(notebooks_control_frame, text="Chạy lần lượt", 
+                                    command=self.run_notebooks_sequentially, 
+                                    width=15)
+        run_sequential_btn.pack(side=tk.LEFT, padx=5, pady=5)
+
+        # Add "Dừng tất cả" button next to it
+        stop_all_btn = ttk.Button(notebooks_control_frame, text="Dừng tất cả", 
+                                command=self.stop_all_notebooks, 
+                                width=15)
+        stop_all_btn.pack(side=tk.RIGHT, padx=5, pady=5)
 
         # Running notebooks frame
         self.running_frame = ttk.LabelFrame(main_frame, text="Notebooks đang chạy")
@@ -1072,7 +957,7 @@ class NotebookRunnerApp:
         thread.start()
         
         info['thread'] = thread
-        self.log(f"Bắt đầu chạy: {os.path.basename(notebook_path)}")
+        # self.log(f"Bắt đầu chạy: {os.path.basename(notebook_path)}")
     
     def stop_notebook(self, notebook_path):
         """Stop a running or waiting notebook"""
